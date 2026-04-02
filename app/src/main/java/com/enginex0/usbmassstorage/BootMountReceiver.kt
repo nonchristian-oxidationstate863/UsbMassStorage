@@ -8,6 +8,7 @@ import android.util.Log
 import com.enginex0.usbmassstorage.daemon.DaemonClient
 import com.enginex0.usbmassstorage.daemon.DeviceType
 import com.enginex0.usbmassstorage.data.DeviceStore
+import com.topjohnwu.superuser.Shell
 import java.io.FileDescriptor
 
 private const val TAG = "UsbMsBoot"
@@ -66,31 +67,42 @@ class BootMountReceiver : BroadcastReceiver() {
                 return
             }
 
-            val pfds = mutableListOf<ParcelFileDescriptor>()
-            try {
-                val fdPairs = mutableListOf<Pair<FileDescriptor, DeviceType>>()
-                for (info in devices) {
-                    val pfd = if (info.uri.scheme == "file") {
-                        val file = java.io.File(info.uri.path!!)
-                        val flags = if (info.type == DeviceType.DISK_RW)
-                            ParcelFileDescriptor.MODE_READ_WRITE
-                        else ParcelFileDescriptor.MODE_READ_ONLY
-                        ParcelFileDescriptor.open(file, flags)
-                    } else {
-                        val mode = if (info.type == DeviceType.DISK_RW) "rw" else "r"
-                        context.contentResolver.openFileDescriptor(info.uri, mode)
-                            ?: continue
-                    }
-                    pfds.add(pfd)
-                    fdPairs.add(pfd.fileDescriptor to info.type)
-                }
+            val allFileScheme = devices.all { it.uri.scheme == "file" }
+            val noneFileScheme = devices.none { it.uri.scheme == "file" }
 
-                if (fdPairs.isNotEmpty()) {
-                    client.setMassStorage(fdPairs)
-                    Log.d(TAG, "Mounted ${fdPairs.size} devices at boot")
+            if (allFileScheme) {
+                val pathDevices = devices.map { info ->
+                    Triple(
+                        info.uri.path!!,
+                        info.type == DeviceType.CDROM,
+                        info.type != DeviceType.DISK_RW,
+                    )
                 }
-            } finally {
-                pfds.forEach { try { it.close() } catch (_: Exception) {} }
+                client.setMassStoragePaths(pathDevices)
+                Log.d(TAG, "Mounted ${pathDevices.size} devices at boot via path protocol")
+            } else if (noneFileScheme) {
+                val pfds = mutableListOf<ParcelFileDescriptor>()
+                try {
+                    val fdPairs = mutableListOf<Pair<FileDescriptor, DeviceType>>()
+                    for (info in devices) {
+                        val mode = if (info.type == DeviceType.DISK_RW) "rw" else "r"
+                        val pfd = context.contentResolver.openFileDescriptor(info.uri, mode)
+                        if (pfd == null) {
+                            Log.w(TAG, "Failed to open FD for ${info.uri} — skipping device")
+                            continue
+                        }
+                        pfds.add(pfd)
+                        fdPairs.add(pfd.fileDescriptor to info.type)
+                    }
+                    if (fdPairs.isNotEmpty()) {
+                        client.setMassStorage(fdPairs)
+                        Log.d(TAG, "Mounted ${fdPairs.size} devices at boot via FD protocol")
+                    }
+                } finally {
+                    pfds.forEach { try { it.close() } catch (_: Exception) {} }
+                }
+            } else {
+                Log.e(TAG, "Cannot mix file:// and content:// URIs at boot — skipping mount")
             }
         }
     }

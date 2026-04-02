@@ -46,6 +46,7 @@ fun Throwable.toAlertMessage(): String {
     return chain.joinToString(" -> ") { "${it.javaClass.simpleName} (${it.message})" }
 }
 
+@androidx.compose.runtime.Stable
 data class UiState(
     val connected: Boolean = false,
     val connecting: Boolean = true,
@@ -143,7 +144,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     client?.close()
                     client = null
                 }
-                pushAlert(Alert.QueryFailure(e.toAlertMessage()))
+                val msg = if (e.toAlertMessage().contains("Permission denied")) {
+                    "SELinux denied the connection. Try rebooting, or check that your root manager loaded the module's sepolicy."
+                } else {
+                    e.toAlertMessage()
+                }
+                pushAlert(Alert.QueryFailure(msg))
                 val daemonAlive = withContext(Dispatchers.IO) { checkDaemonStatus() }
                 _uiState.update {
                     it.copy(
@@ -166,39 +172,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             try {
                 withContext(Dispatchers.IO) {
-                    val fdPairs = mutableListOf<Pair<FileDescriptor, DeviceType>>()
-                    val pfds = mutableListOf<ParcelFileDescriptor>()
+                    val allFileScheme = devices.all { it.uri.scheme == "file" }
+                    val noneFileScheme = devices.none { it.uri.scheme == "file" }
 
-                    try {
-                        for (info in devices) {
-                            val mode = if (info.type == DeviceType.DISK_RW) "rw" else "r"
-                            val pfd = if (info.uri.scheme == "file") {
-                                val file = java.io.File(info.uri.path!!)
-                                val flags = if (info.type == DeviceType.DISK_RW)
-                                    ParcelFileDescriptor.MODE_READ_WRITE
-                                else ParcelFileDescriptor.MODE_READ_ONLY
-                                ParcelFileDescriptor.open(file, flags)
-                            } else {
-                                context.contentResolver.openFileDescriptor(info.uri, mode)
+                    if (allFileScheme) {
+                        val pathDevices = devices.map { info ->
+                            Triple(
+                                info.uri.path!!,
+                                info.type == DeviceType.CDROM,
+                                info.type != DeviceType.DISK_RW,
+                            )
+                        }
+                        withDaemon { c -> c.setMassStoragePaths(pathDevices) }
+                    } else if (noneFileScheme) {
+                        val fdPairs = mutableListOf<Pair<FileDescriptor, DeviceType>>()
+                        val pfds = mutableListOf<ParcelFileDescriptor>()
+                        try {
+                            for (info in devices) {
+                                val mode = if (info.type == DeviceType.DISK_RW) "rw" else "r"
+                                val pfd = context.contentResolver.openFileDescriptor(info.uri, mode)
                                     ?: throw IllegalStateException("Failed to open FD for ${info.uri}")
+                                pfds.add(pfd)
+                                validateFd(pfd.fileDescriptor)
+                                fdPairs.add(pfd.fileDescriptor to info.type)
                             }
-                            pfds.add(pfd)
-
-                            validateFd(pfd.fileDescriptor)
-
-                            fdPairs.add(pfd.fileDescriptor to info.type)
+                            withDaemon { c -> c.setMassStorage(fdPairs) }
+                        } finally {
+                            pfds.forEach { pfd ->
+                                try { pfd.close() } catch (_: Exception) {}
+                            }
                         }
-
-                        withDaemon { c -> c.setMassStorage(fdPairs) }
-                    } finally {
-                        pfds.forEach { pfd ->
-                            try { pfd.close() } catch (_: Exception) {}
-                        }
+                    } else {
+                        throw IllegalStateException("Cannot mix file:// and content:// URIs in a single mount")
                     }
                 }
 
                 Log.d(TAG, "setMassStorage: success, refreshing state")
-                store.save(devices)
+                withContext(Dispatchers.IO) { store.save(devices) }
                 _uiState.update { it.copy(savedDevices = devices) }
                 refreshDevices()
 
@@ -251,7 +261,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     withDaemon { c -> c.setMassStorage(emptyList()) }
                 }
                 Log.d(TAG, "clearDevices: success")
-                store.clear()
+                withContext(Dispatchers.IO) { store.clear() }
                 _uiState.update { it.copy(savedDevices = emptyList()) }
                 refreshDevices()
             } catch (e: Exception) {
@@ -321,7 +331,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     client?.close()
                     client = null
                 }
-                Shell.cmd("pkill -f '/bin/.*/daemon' 2>/dev/null; sleep 0.5; rm -f /dev/usbms_svc_lock; sh /data/adb/modules/usbmassstorage/service.sh &").exec()
+                Shell.cmd("pkill -f 'service.sh.*usbmassstorage' 2>/dev/null; pkill -f '/bin/.*/daemon' 2>/dev/null; sleep 0.5; rm -f /dev/usbms_svc_lock; sh /data/adb/modules/usbmassstorage/service.sh &").exec()
             }
 
             delay(1000)
@@ -348,7 +358,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ).exec()
             }
 
-            store.clear()
+            withContext(Dispatchers.IO) { store.clear() }
             _uiState.update {
                 it.copy(
                     connected = false,
@@ -468,16 +478,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun enrichWithSize(devices: List<ActiveDevice>): List<ActiveDevice> =
-        devices.map { dev ->
-            val path = normalizeMediaPath(dev.file)
-            val size = try { java.io.File(path).length() } catch (_: Exception) { -1L }
-            val fs = try {
-                val r = Shell.cmd("blkid -s TYPE -o value '$path'").exec()
-                if (r.isSuccess && r.out.isNotEmpty()) r.out[0].trim().uppercase() else null
-            } catch (_: Exception) { null }
-            dev.copy(file = path, size = size, fsType = fs)
+    private fun enrichWithSize(devices: List<ActiveDevice>): List<ActiveDevice> {
+        if (devices.isEmpty()) return devices
+        val normalized = devices.map { it.copy(file = normalizeMediaPath(it.file)) }
+        val safe = normalized.filter { it.file.matches(SAFE_PATH_RE) }
+        if (safe.isEmpty()) return normalized
+
+        val script = safe.joinToString("; ") { dev ->
+            "echo \"$(stat -c '%s' '${dev.file}' 2>/dev/null)|$(blkid -s TYPE -o value '${dev.file}' 2>/dev/null)\""
         }
+        val result = try { Shell.cmd(script).exec() } catch (_: Exception) { null }
+        val lines = result?.out ?: emptyList()
+
+        val infoMap = safe.zip(lines).associate { (dev, line) ->
+            val parts = line.split("|", limit = 2)
+            dev.file to Pair(
+                parts.getOrNull(0)?.trim()?.toLongOrNull() ?: -1L,
+                parts.getOrNull(1)?.trim()?.uppercase()?.ifEmpty { null }
+            )
+        }
+        return normalized.map { dev ->
+            val (size, fs) = infoMap[dev.file] ?: (-1L to null)
+            dev.copy(size = size, fsType = fs)
+        }
+    }
 
     override fun onCleared() {
         super.onCleared()
@@ -489,6 +513,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 }
+
+private val SAFE_PATH_RE = Regex("[a-zA-Z0-9/._-]+")
 
 private fun normalizeMediaPath(path: String): String {
     if (path.startsWith("/data/media/")) {

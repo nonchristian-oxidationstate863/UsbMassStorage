@@ -21,8 +21,8 @@ class DeviceStore(context: Context) {
 
         val devices = mutableListOf<DeviceInfo>()
         for (i in 0 until count) {
-            val uri = prefs.getString("device_${i}_uri", null) ?: break
-            val typeName = prefs.getString("device_${i}_type", null) ?: break
+            val uri = prefs.getString("device_${i}_uri", null) ?: continue
+            val typeName = prefs.getString("device_${i}_type", null) ?: continue
             val type = try {
                 DeviceType.valueOf(typeName)
             } catch (_: IllegalArgumentException) {
@@ -73,12 +73,15 @@ class DeviceStore(context: Context) {
             return
         }
 
-        val cmds = mutableListOf(": > $AUTOMOUNT_PATH")
-        lines.forEach {
-            val escaped = it.replace("'", "'\\''")
-            cmds.add("printf '%s\\n' '$escaped' >> $AUTOMOUNT_PATH")
+        val script = buildString {
+            append("printf '' > '${AUTOMOUNT_PATH}.tmp'")
+            lines.forEach {
+                val escaped = it.replace("'", "'\\''")
+                append(" && printf '%s\\n' '$escaped' >> '${AUTOMOUNT_PATH}.tmp'")
+            }
+            append(" && mv '${AUTOMOUNT_PATH}.tmp' '$AUTOMOUNT_PATH'")
         }
-        Shell.cmd(*cmds.toTypedArray()).exec()
+        Shell.cmd(script).exec()
         Log.d(TAG, "writeAutomountConfig: ${lines.size} entries")
     }
 
@@ -92,6 +95,6 @@ class DeviceStore(context: Context) {
     }
 
     companion object {
-        private const val AUTOMOUNT_PATH = "/data/adb/usbmassstorage/automount.conf"
+        private const val AUTOMOUNT_PATH = "/data/adb/Usbmanagement/automount.conf"
     }
 }
