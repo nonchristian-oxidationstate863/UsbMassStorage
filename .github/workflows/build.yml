@@ -68,15 +68,25 @@ jobs:
       - name: Build APK (${{ matrix.profile }})
         run: |
           if [ "$PROFILE" = "release" ]; then
-            ./gradlew assembleRelease
+            ./gradlew assembleRelease --no-daemon
           else
-            ./gradlew assembleDebug
+            ./gradlew assembleDebug --no-daemon
           fi
         env:
           PROFILE: ${{ matrix.profile }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Verify R8 shrinking (release only)
+        if: matrix.profile == 'release'
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          SIZE=$(stat -c%s "$APK")
+          echo "Release APK size: $((SIZE / 1024)) KB"
+          if [ "$SIZE" -gt 10485760 ]; then
+            echo "::warning::Release APK exceeds 10MB — R8 shrinking may not be effective"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
