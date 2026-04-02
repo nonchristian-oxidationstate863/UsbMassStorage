@@ -81,7 +81,8 @@ private fun UsbMassStorageApp(
                 onImages = { navController.navigate("images") },
                 onEjectDevice = { index -> vm.ejectDevice(context, index) },
                 onDeviceClick = { index -> editDeviceIndex = index },
-                onAcknowledgeAlert = { vm.acknowledgeAlert() }
+                onAcknowledgeAlert = { vm.acknowledgeAlert() },
+                onReboot = { com.topjohnwu.superuser.Shell.cmd("reboot").exec() }
             )
         }
         composable("settings") {
@@ -98,7 +99,7 @@ private fun UsbMassStorageApp(
         }
         composable("images") {
             ImageManagerScreen(
-                mountedPaths = state.activeDevices.map { it.file }.toSet(),
+                mountedPaths = remember(state.activeDevices) { state.activeDevices.map { it.file }.toSet() },
                 onBack = { navController.popBackStack() },
                 onMount = { deviceInfo ->
                     if (deviceInfo.uri.scheme != "file") {

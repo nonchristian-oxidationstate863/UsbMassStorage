@@ -3,6 +3,8 @@ package com.enginex0.usbmassstorage.ui
 import android.net.Uri
 import android.os.Environment
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -78,8 +80,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val IMAGES_DIR = "/data/adb/Usbmanagement/images"
+
 private data class DiskImage(
-    val file: java.io.File,
+    val path: String,
     val name: String,
     val size: Long,
     val extension: String,
@@ -87,21 +91,35 @@ private data class DiskImage(
     val fsType: String?
 )
 
-private fun scanImages(context: android.content.Context): List<DiskImage> {
-    val dir = java.io.File(context.getExternalFilesDir(null), "images")
-    if (!dir.exists()) return emptyList()
-    val extensions = setOf("img", "iso", "bin", "raw")
-    return dir.listFiles()
-        ?.filter { it.isFile && it.extension.lowercase() in extensions }
-        ?.sortedByDescending { it.lastModified() }
-        ?.map { file ->
-            val fsType = try {
-                val r = Shell.cmd("blkid -s TYPE -o value '${file.absolutePath}'").exec()
-                if (r.isSuccess && r.out.isNotEmpty()) r.out[0].trim().uppercase() else null
-            } catch (_: Exception) { null }
-            DiskImage(file, file.name, file.length(), file.extension.lowercase(), file.lastModified(), fsType)
-        }
-        ?: emptyList()
+private val SAFE_NAME_RE = Regex("[a-zA-Z0-9._-]+")
+private val UNSAFE_CHAR_RE = Regex("[^a-zA-Z0-9._-]")
+private val IMAGE_EXTENSIONS = setOf("img", "iso", "bin", "raw")
+
+private fun scanImages(): List<DiskImage> {
+    val r = Shell.cmd("ls -1 '$IMAGES_DIR' 2>/dev/null").exec()
+    if (!r.isSuccess || r.out.isEmpty()) return emptyList()
+    val names = r.out.filter { name ->
+        name.substringAfterLast('.').lowercase() in IMAGE_EXTENSIONS
+            && name.matches(SAFE_NAME_RE)
+    }
+    if (names.isEmpty()) return emptyList()
+
+    val script = names.joinToString("; ") { name ->
+        "echo \"$(stat -c '%s %Y' '$IMAGES_DIR/$name' 2>/dev/null)|$(blkid -s TYPE -o value '$IMAGES_DIR/$name' 2>/dev/null)\""
+    }
+    val batch = try { Shell.cmd(script).exec() } catch (_: Exception) { null }
+    val lines = batch?.out ?: emptyList()
+
+    return names.zip(lines).mapNotNull { (name, line) ->
+        val pipe = line.split("|", limit = 2)
+        val statParts = (pipe.getOrNull(0) ?: "").split(" ", limit = 2)
+        val size = statParts.getOrNull(0)?.toLongOrNull() ?: 0L
+        val mtime = (statParts.getOrNull(1)?.toLongOrNull() ?: 0L) * 1000L
+        if (size == 0L && mtime == 0L) return@mapNotNull null
+        val ext = name.substringAfterLast('.').lowercase()
+        val fsType = pipe.getOrNull(1)?.trim()?.uppercase()?.ifEmpty { null }
+        DiskImage("$IMAGES_DIR/$name", name, size, ext, mtime, fsType)
+    }.sortedByDescending { it.lastModified }
 }
 
 private fun formatSize(bytes: Long): String = when {
@@ -136,9 +154,49 @@ fun ImageManagerScreen(
     var showClearConfirm by remember { mutableStateOf(false) }
     var showBatchDelete by remember { mutableStateOf(false) }
 
+    var importing by remember { mutableStateOf(false) }
+
     val inSelectionMode = selected.isNotEmpty()
     val exportSuccessMsg = stringResource(R.string.images_export_success)
     val exportFailedMsg = stringResource(R.string.images_export_failed)
+    val importSuccessMsg = stringResource(R.string.images_import_success)
+    val importFailedMsg = stringResource(R.string.images_import_failed)
+
+    val importPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importing = true
+        scope.launch {
+            val success = withContext(Dispatchers.IO) {
+                try {
+                    val name = uri.lastPathSegment?.substringAfterLast('/') ?: "imported.img"
+                    val safeName = name.replace(UNSAFE_CHAR_RE, "_")
+                    // Avoid overwriting existing files — append counter on collision
+                    val baseName = safeName.substringBeforeLast('.')
+                    val ext = safeName.substringAfterLast('.', "img")
+                    val existing = Shell.cmd("ls '$IMAGES_DIR' 2>/dev/null").exec()
+                    val existingNames = if (existing.isSuccess) existing.out.toSet() else emptySet()
+                    var finalName = safeName
+                    var counter = 1
+                    while (finalName in existingNames) {
+                        finalName = "${baseName}_$counter.$ext"
+                        counter++
+                    }
+                    val dest = "$IMAGES_DIR/$finalName"
+                    val fd = context.contentResolver.openInputStream(uri)
+                    if (fd != null) {
+                        val tmpPath = "${context.cacheDir}/$safeName"
+                        java.io.File(tmpPath).outputStream().use { out -> fd.use { it.copyTo(out) } }
+                        Shell.cmd("mv '$tmpPath' '$dest' && chown system:system '$dest' && chmod 666 '$dest'").exec().isSuccess
+                    } else false
+                } catch (_: Exception) { false }
+            }
+            importing = false
+            Toast.makeText(context, if (success) importSuccessMsg else importFailedMsg, Toast.LENGTH_SHORT).show()
+            if (success) refreshTrigger++
+        }
+    }
 
     val mountedNames = remember(mountedPaths) {
         mountedPaths.mapNotNull { path ->
@@ -148,7 +206,7 @@ fun ImageManagerScreen(
 
     LaunchedEffect(refreshTrigger) {
         loading = true
-        images = withContext(Dispatchers.IO) { scanImages(context) }
+        images = withContext(Dispatchers.IO) { scanImages() }
         loading = false
     }
 
@@ -159,10 +217,10 @@ fun ImageManagerScreen(
             text = { Text(stringResource(R.string.images_delete_message, image.name)) },
             confirmButton = {
                 TextButton(onClick = {
-                    val target = image.file
+                    val targetPath = image.path
                     deleteTarget = null
                     scope.launch {
-                        withContext(Dispatchers.IO) { target.delete() }
+                        withContext(Dispatchers.IO) { Shell.cmd("rm -f '$targetPath'").exec() }
                         refreshTrigger++
                     }
                 }) {
@@ -192,7 +250,7 @@ fun ImageManagerScreen(
                     scope.launch {
                         withContext(Dispatchers.IO) {
                             images.filter { it.name !in mountedNames }
-                                .forEach { it.file.delete() }
+                                .forEach { Shell.cmd("rm -f '${it.path}'").exec() }
                         }
                         selected = emptySet()
                         refreshTrigger++
@@ -221,8 +279,8 @@ fun ImageManagerScreen(
                     scope.launch {
                         withContext(Dispatchers.IO) {
                             toDelete.forEach { path ->
-                                val f = java.io.File(path)
-                                if (f.name !in mountedNames) f.delete()
+                                val name = path.substringAfterLast('/')
+                                if (name !in mountedNames) Shell.cmd("rm -f '$path'").exec()
                             }
                         }
                         selected = emptySet()
@@ -271,6 +329,14 @@ fun ImageManagerScreen(
                                 Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.action_menu))
                             }
                             DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.images_import)) },
+                                    enabled = !importing,
+                                    onClick = {
+                                        showMenu = false
+                                        importPicker.launch(arrayOf("application/octet-stream", "*/*"))
+                                    }
+                                )
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.images_clear_unmounted)) },
                                     onClick = {
@@ -351,35 +417,33 @@ fun ImageManagerScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxSize().padding(padding)
                 ) {
-                    items(images, key = { it.file.absolutePath }) { image ->
+                    items(images, key = { it.path }) { image ->
                         val isMounted = image.name in mountedNames
                         ImageCard(
                             image = image,
                             isMounted = isMounted,
-                            isExporting = exportingPath == image.file.absolutePath,
+                            isExporting = exportingPath == image.path,
                             inSelectionMode = inSelectionMode,
-                            isSelected = image.file.absolutePath in selected,
+                            isSelected = image.path in selected,
                             onMount = {
                                 onMount(
                                     DeviceInfo(
-                                        Uri.fromFile(image.file),
+                                        Uri.fromFile(java.io.File(image.path)),
                                         DeviceType.DISK_RW,
                                         image.fsType
                                     )
                                 )
                             },
                             onExport = {
-                                val src = image.file
                                 val dlDir = Environment.getExternalStoragePublicDirectory(
                                     Environment.DIRECTORY_DOWNLOADS
                                 )
-                                exportingPath = src.absolutePath
+                                exportingPath = image.path
                                 scope.launch {
                                     val success = withContext(Dispatchers.IO) {
                                         try {
                                             dlDir.mkdirs()
-                                            src.copyTo(java.io.File(dlDir, src.name), overwrite = true)
-                                            true
+                                            Shell.cmd("cp '${image.path}' '${dlDir.absolutePath}/${image.name}'").exec().isSuccess
                                         } catch (_: Exception) { false }
                                     }
                                     exportingPath = null
@@ -393,8 +457,7 @@ fun ImageManagerScreen(
                             onDelete = { deleteTarget = image },
                             onToggleSelect = {
                                 if (!isMounted) {
-                                    val path = image.file.absolutePath
-                                    selected = if (path in selected) selected - path else selected + path
+                                    selected = if (image.path in selected) selected - image.path else selected + image.path
                                 }
                             }
                         )

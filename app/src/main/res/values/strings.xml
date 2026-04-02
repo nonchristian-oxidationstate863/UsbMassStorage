@@ -65,6 +65,9 @@
 
     <string name="settings_daemon_status">Daemon Status</string>
     <string name="settings_restart_daemon">Restart Daemon</string>
+    <string name="restart_daemon_confirm">This will restart the USB Mass Storage daemon. Continue?</string>
+    <string name="reboot_title">Reboot Device</string>
+    <string name="reboot_confirm">This will reboot your device. Continue?</string>
     <string name="settings_stop_daemon">Stop Daemon</string>
     <string name="settings_app_info">App Info</string>
     <string name="settings_version">Version: %s</string>
@@ -121,6 +124,10 @@
     <string name="images_batch_delete_message">Permanently delete %d selected images? This cannot be undone.</string>
     <string name="images_storage_hint">Clear unused images regularly to free storage</string>
     <string name="images_no_unmounted">All images are currently mounted</string>
+    <string name="images_import">Import Image</string>
+    <string name="images_import_success">Image imported successfully</string>
+    <string name="images_import_failed">Import failed</string>
+    <string name="images_importing">Importing…</string>
 
     <string name="format_fat32">FAT32</string>
     <string name="format_exfat">exFAT</string>

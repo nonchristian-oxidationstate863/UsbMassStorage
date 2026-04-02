@@ -82,31 +82,13 @@ private val SIZE_PRESETS = listOf(
     SizePreset("32 GB", 32_000_000_000L),
 )
 
-private val SIZE_PATTERN = Regex(
-    """^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|KiB|MiB|GiB)?\s*$""",
-    RegexOption.IGNORE_CASE
-)
 
-private fun parseSize(input: String): Long? {
-    val match = SIZE_PATTERN.matchEntire(input) ?: return null
-    val value = match.groupValues[1].toDoubleOrNull() ?: return null
-    val unit = match.groupValues[2].uppercase().ifEmpty { "MB" }
-    val multiplier = when (unit) {
-        "B" -> 1L
-        "KB" -> 1_000L
-        "MB" -> 1_000_000L
-        "GB" -> 1_000_000_000L
-        "KIB" -> 1_024L
-        "MIB" -> 1_048_576L
-        "GIB" -> 1_073_741_824L
-        else -> return null
-    }
-    val bytes = (value * multiplier).toLong()
-    return if (bytes > 0) bytes else null
-}
+
+private val UNSAFE_CHAR_RE = Regex("[^a-zA-Z0-9._-]")
+private val WHITESPACE_RE = Regex("\\s+")
 
 private fun sanitizeFilename(name: String): String =
-    name.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
+    name.trim().replace(UNSAFE_CHAR_RE, "_")
 
 private fun formatBytes(bytes: Long): String = when {
     bytes >= 1_000_000_000L -> "%.1f GB".format(bytes / 1_000_000_000.0)
@@ -115,6 +97,16 @@ private fun formatBytes(bytes: Long): String = when {
 }
 
 private const val MODULE_DIR = "/data/adb/modules/usbmassstorage"
+private const val IMAGES_DIR = "/data/adb/Usbmanagement/images"
+private const val STORAGE_RESERVE = 10_000_000_000L // Keep 10 GB free for system
+
+private suspend fun getUsableSpace(): Long = withContext(Dispatchers.IO) {
+    val result = Shell.cmd("df /data | tail -1").exec()
+    if (!result.isSuccess || result.out.isEmpty()) return@withContext -1L
+    val parts = result.out[0].trim().split(WHITESPACE_RE)
+    val availKb = if (parts.size >= 4) parts[3].toLongOrNull() else null
+    if (availKb != null) maxOf(0L, availKb * 1024 - STORAGE_RESERVE) else -1L
+}
 
 private suspend fun findBundledMkfs(): String? = withContext(Dispatchers.IO) {
     val abis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -139,16 +131,15 @@ private suspend fun formatExfat(path: String) = withContext(Dispatchers.IO) {
 }
 
 private suspend fun createAndFormat(
-    baseDir: java.io.File,
     filename: String,
     sizeBytes: Long,
     fsType: FileSystemType
 ): String = withContext(Dispatchers.IO) {
-    val dir = java.io.File(baseDir, "images").apply { mkdirs() }
-    val file = java.io.File(dir, filename)
-    val path = file.absolutePath
+    val path = "$IMAGES_DIR/$filename"
 
-    java.io.RandomAccessFile(file, "rw").use { it.setLength(sizeBytes) }
+    Shell.cmd("mkdir -p '$IMAGES_DIR'").exec()
+    val create = Shell.cmd("fallocate -l $sizeBytes '$path' 2>/dev/null || dd if=/dev/zero of='$path' bs=4096 count=${sizeBytes / 4096 + 1} && chown system:system '$path' && chmod 666 '$path'").exec()
+    if (!create.isSuccess) throw IllegalStateException("Failed to create image: ${create.err.joinToString()}")
 
     try {
         when (fsType) {
@@ -157,7 +148,7 @@ private suspend fun createAndFormat(
             FileSystemType.NONE -> {}
         }
     } catch (e: Exception) {
-        file.delete()
+        Shell.cmd("rm -f '$path'").exec()
         throw e
     }
 
@@ -178,6 +169,7 @@ fun CreateImageSheet(
     var selectedExt by remember { mutableStateOf(".img") }
     var selectedPresetIndex by remember { mutableStateOf(1) }
     var customSize by remember { mutableStateOf("") }
+    var customUnit by remember { mutableStateOf("GB") }
     var useCustom by remember { mutableStateOf(false) }
     var selectedFormat by remember { mutableStateOf(FormatPreference.load(context)) }
     var creating by remember { mutableStateOf(false) }
@@ -185,16 +177,18 @@ fun CreateImageSheet(
     var error by remember { mutableStateOf<String?>(null) }
     var hasVfat by remember { mutableStateOf(true) }
     var hasExfat by remember { mutableStateOf(true) }
+    var usableSpace by remember { mutableStateOf(-1L) }
 
     LaunchedEffect(Unit) {
-        val dir = java.io.File(context.getExternalFilesDir(null), "images")
         val existing = withContext(Dispatchers.IO) {
-            dir.listFiles()?.map { it.nameWithoutExtension }?.toSet() ?: emptySet()
+            val r = Shell.cmd("ls '$IMAGES_DIR' 2>/dev/null").exec()
+            if (r.isSuccess) r.out.map { it.substringBeforeLast('.') }.toSet() else emptySet()
         }
         var n = 1
         while ("disk$n" in existing) n++
         filename = "disk$n"
 
+        usableSpace = getUsableSpace()
         hasVfat = findBundledMkfs() != null
         hasExfat = checkBinary("mkfs.exfat")
         if (selectedFormat == FileSystemType.EXFAT && !hasExfat) {
@@ -202,7 +196,15 @@ fun CreateImageSheet(
         }
     }
 
-    val sizeBytes = if (useCustom) parseSize(customSize) else SIZE_PRESETS[selectedPresetIndex].bytes
+    val effectiveMax = usableSpace
+
+    val sizeBytes = if (useCustom) {
+        val num = customSize.trim().toDoubleOrNull()
+        if (num != null && num > 0) {
+            val multiplier = if (customUnit == "GB") 1_000_000_000L else 1_000_000L
+            (num * multiplier).toLong()
+        } else null
+    } else SIZE_PRESETS[selectedPresetIndex].bytes
     val filenameRequiredMsg = stringResource(R.string.create_image_filename_required)
     val invalidSizeMsg = stringResource(R.string.create_image_invalid)
     val creatingMsg = stringResource(R.string.create_image_creating)
@@ -309,10 +311,23 @@ fun CreateImageSheet(
                         }
                     }
 
-                    Text(
-                        stringResource(R.string.create_image_pick_size),
-                        style = MaterialTheme.typography.labelLarge
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            stringResource(R.string.create_image_pick_size),
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        if (effectiveMax > 0) {
+                            Text(
+                                "max ${formatBytes(effectiveMax)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
 
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -333,26 +348,50 @@ fun CreateImageSheet(
                     }
 
                     if (useCustom) {
-                        OutlinedTextField(
-                            value = customSize,
-                            onValueChange = { customSize = it },
-                            label = { Text(stringResource(R.string.create_image_size)) },
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                            shape = RoundedCornerShape(12.dp),
-                            supportingText = {
-                                val bytes = parseSize(customSize)
-                                if (bytes != null) {
-                                    Text("= ${formatBytes(bytes)}")
-                                } else if (customSize.isNotBlank()) {
-                                    Text(
-                                        stringResource(R.string.create_image_invalid_size),
-                                        color = MaterialTheme.colorScheme.error
-                                    )
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = customSize,
+                                onValueChange = { customSize = it },
+                                label = { Text(stringResource(R.string.create_image_size)) },
+                                placeholder = { Text("e.g. 4") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                shape = RoundedCornerShape(12.dp),
+                                supportingText = {
+                                    val spaceHint = if (usableSpace > 0) "${formatBytes(usableSpace)} available" else ""
+                                    if (sizeBytes != null) {
+                                        val tooLarge = usableSpace >= 0 && sizeBytes > usableSpace
+                                        Text(
+                                            "= ${formatBytes(sizeBytes)}${if (spaceHint.isNotEmpty()) " · $spaceHint" else ""}",
+                                            color = if (tooLarge) MaterialTheme.colorScheme.error
+                                                   else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        )
+                                    } else if (spaceHint.isNotEmpty()) {
+                                        Text(spaceHint, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                                    }
                                 }
+                            )
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(top = 8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = customUnit == "MB",
+                                    onClick = { customUnit = "MB" },
+                                    label = { Text("MB") }
+                                )
+                                FilterChip(
+                                    selected = customUnit == "GB",
+                                    onClick = { customUnit = "GB" },
+                                    label = { Text("GB") }
+                                )
                             }
-                        )
+                        }
                     }
 
                     Text(
@@ -445,6 +484,10 @@ fun CreateImageSheet(
                         onClick = {
                             if (filename.isBlank()) { error = filenameRequiredMsg; return@Button }
                             if (sizeBytes == null) { error = invalidSizeMsg; return@Button }
+                            if (usableSpace >= 0 && sizeBytes > usableSpace) {
+                                error = "Not enough space. Available: ${formatBytes(usableSpace)}, requested: ${formatBytes(sizeBytes)}"
+                                return@Button
+                            }
                             error = null
                             creating = true
                             statusText = creatingMsg
@@ -452,17 +495,10 @@ fun CreateImageSheet(
                             val safeName = sanitizeFilename(filename).ifEmpty { "disk" }
                             val finalName = "$safeName$selectedExt"
 
-                            val baseDir = context.getExternalFilesDir(null)
-                            if (baseDir == null) {
-                                error = "External storage unavailable"
-                                creating = false
-                                return@Button
-                            }
-
                             scope.launch {
                                 try {
                                     if (selectedFormat != FileSystemType.NONE) statusText = formattingMsg
-                                    val path = createAndFormat(baseDir, finalName, sizeBytes, selectedFormat)
+                                    val path = createAndFormat(finalName, sizeBytes, selectedFormat)
                                     val fsLabel = when (selectedFormat) {
                                         FileSystemType.FAT32 -> "VFAT"
                                         FileSystemType.EXFAT -> "EXFAT"

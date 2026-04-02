@@ -1,6 +1,5 @@
 package com.enginex0.usbmassstorage.ui
 
-import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +18,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,7 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
@@ -67,8 +66,6 @@ import com.enginex0.usbmassstorage.ui.components.DeviceCard
 import com.enginex0.usbmassstorage.ui.components.UsbStatusBar
 import com.enginex0.usbmassstorage.viewmodel.UiState
 
-private const val TAG = "UsbMsUI"
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceListScreen(
@@ -81,12 +78,14 @@ fun DeviceListScreen(
     onImages: () -> Unit = {},
     onEjectDevice: (Int) -> Unit,
     onDeviceClick: (Int) -> Unit = {},
-    onAcknowledgeAlert: () -> Unit = {}
+    onAcknowledgeAlert: () -> Unit = {},
+    onReboot: () -> Unit = {}
 ) {
-    Log.d(TAG, "DeviceListScreen: composed, connected=${state.connected}, devices=${state.activeDevices.size}")
-    val bgOpacity = BackgroundPreference.load(LocalContext.current)
+    val context = LocalContext.current
+    val bgOpacity = remember(bgIndex) { BackgroundPreference.load(context) }
     val bgRes = if (bgIndex % 2 == 0) R.drawable.bg_1 else R.drawable.bg_2
     var menuExpanded by remember { mutableStateOf(false) }
+    var showRestartDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     var showAlertDetail by remember { mutableStateOf<String?>(null) }
     val clipboardManager = LocalClipboardManager.current
@@ -129,6 +128,25 @@ fun DeviceListScreen(
         )
     }
 
+    if (showRestartDialog) {
+        AlertDialog(
+            onDismissRequest = { showRestartDialog = false },
+            title = { Text(stringResource(R.string.reboot_title)) },
+            text = { Text(stringResource(R.string.reboot_confirm)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRestartDialog = false
+                    onReboot()
+                }) { Text(stringResource(android.R.string.ok)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestartDialog = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            }
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Image(
             painter = painterResource(bgRes),
@@ -147,11 +165,8 @@ fun DeviceListScreen(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
                 actions = {
-                    IconButton(onClick = {
-                        Log.d(TAG, "DeviceListScreen: refresh clicked")
-                        onRefresh()
-                    }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = stringResource(R.string.action_refresh))
+                    IconButton(onClick = { showRestartDialog = true }) {
+                        Icon(Icons.Filled.RestartAlt, contentDescription = stringResource(R.string.reboot_title))
                     }
                     Box {
                         IconButton(onClick = { menuExpanded = true }) {
@@ -182,13 +197,6 @@ fun DeviceListScreen(
                                     onGuide()
                                 }
                             )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.action_refresh)) },
-                                onClick = {
-                                    menuExpanded = false
-                                    onRefresh()
-                                }
-                            )
                         }
                     }
                 }
@@ -212,7 +220,7 @@ fun DeviceListScreen(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onAddDevice()
                     },
-                    modifier = Modifier.scale(scale),
+                    modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale },
                     elevation = FloatingActionButtonDefaults.elevation(8.dp)
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.add_device_fab))
@@ -293,7 +301,7 @@ fun DeviceListScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            itemsIndexed(state.activeDevices) { index, device ->
+                            itemsIndexed(state.activeDevices, key = { i, d -> "${d.file}:$i" }) { index, device ->
                                 DeviceCard(
                                     device = device,
                                     index = index,
