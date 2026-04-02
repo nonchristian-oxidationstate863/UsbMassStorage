@@ -40,13 +40,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -148,14 +153,15 @@ fun DeviceCard(
                         )
                         Spacer(Modifier.width(8.dp))
                         val pulse by glow.animateFloat(
-                            initialValue = 6f,
-                            targetValue = 10f,
+                            initialValue = 0.75f,
+                            targetValue = 1.25f,
                             animationSpec = infiniteRepeatable(tween(1200), RepeatMode.Reverse),
                             label = "dot"
                         )
                         Box(
                             modifier = Modifier
-                                .size(pulse.dp)
+                                .size(8.dp)
+                                .graphicsLayer { scaleX = pulse; scaleY = pulse }
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.tertiary)
                         )
@@ -218,11 +224,16 @@ fun DeviceCard(
                     InfoRow(stringResource(R.string.device_label_format), device.fsType)
                     Spacer(Modifier.height(6.dp))
                 }
-                val created = java.io.File(device.file).let { f ->
-                    if (f.exists()) formatDateTime(f.lastModified()) else null
+                var created by remember(device.file) { mutableStateOf<String?>(null) }
+                LaunchedEffect(expanded, device.file) {
+                    if (!expanded) return@LaunchedEffect
+                    created = withContext(Dispatchers.IO) {
+                        val f = java.io.File(device.file)
+                        if (f.exists()) formatDateTime(f.lastModified()) else null
+                    }
                 }
                 if (created != null) {
-                    InfoRow(stringResource(R.string.device_label_created), created)
+                    InfoRow(stringResource(R.string.device_label_created), created!!)
                     Spacer(Modifier.height(6.dp))
                 }
                 InfoRow(stringResource(R.string.device_label_lun), index.toString())

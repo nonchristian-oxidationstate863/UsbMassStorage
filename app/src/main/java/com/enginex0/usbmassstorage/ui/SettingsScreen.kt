@@ -27,7 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.graphics.Brush
@@ -52,10 +52,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -212,14 +217,18 @@ fun SettingsScreen(
             Text(stringResource(R.string.settings_debug_title), style = MaterialTheme.typography.titleMedium)
 
             val logsCopiedMsg = stringResource(R.string.settings_logs_copied)
+            val scope = rememberCoroutineScope()
             OutlinedButton(
                 onClick = {
-                    Log.d(TAG, "Settings: copy logs clicked")
-                    val result = Shell.cmd("logcat -d -s msd-tool MsdClient MsdProto UsbMsVM").exec()
-                    val logs = result.out.joinToString("\n")
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("daemon logs", logs))
-                    Toast.makeText(context, logsCopiedMsg, Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        val logs = withContext(Dispatchers.IO) {
+                            Shell.cmd("logcat -d -s msd-tool MsdClient MsdProto UsbMsVM").exec()
+                                .out.joinToString("\n")
+                        }
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("daemon logs", logs))
+                        Toast.makeText(context, logsCopiedMsg, Toast.LENGTH_SHORT).show()
+                    }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -228,13 +237,16 @@ fun SettingsScreen(
 
             OutlinedButton(
                 onClick = {
-                    Log.d(TAG, "Settings: SELinux context clicked")
-                    val pid = Shell.cmd("pidof daemon").exec()
-                    if (pid.isSuccess && pid.out.isNotEmpty()) {
-                        val ctxResult = Shell.cmd("cat /proc/${pid.out[0].trim()}/attr/current").exec()
-                        selinuxContext = ctxResult.out.joinToString()
-                    } else {
-                        selinuxContext = "Daemon not running"
+                    scope.launch {
+                        selinuxContext = withContext(Dispatchers.IO) {
+                            val pid = Shell.cmd("pidof daemon").exec()
+                            if (pid.isSuccess && pid.out.isNotEmpty()) {
+                                Shell.cmd("cat /proc/${pid.out[0].trim()}/attr/current").exec()
+                                    .out.joinToString()
+                            } else {
+                                "Daemon not running"
+                            }
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -256,6 +268,13 @@ fun SettingsScreen(
             }
 
             if (debugMode) {
+                var pidText by remember { mutableStateOf("…") }
+                LaunchedEffect(debugMode) {
+                    pidText = withContext(Dispatchers.IO) {
+                        val r = Shell.cmd("pidof daemon").exec()
+                        if (r.isSuccess && r.out.isNotEmpty()) r.out[0].trim() else "N/A"
+                    }
+                }
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -267,9 +286,6 @@ fun SettingsScreen(
                         val logDir = context.getExternalFilesDir(null)?.absolutePath ?: "N/A"
                         Text(stringResource(R.string.settings_log_dir, logDir), style = MaterialTheme.typography.bodySmall)
 
-                        val daemonPid = Shell.cmd("pidof daemon").exec()
-                        val pidText = if (daemonPid.isSuccess && daemonPid.out.isNotEmpty())
-                            daemonPid.out[0].trim() else "N/A"
                         Text(stringResource(R.string.settings_daemon_pid, pidText), style = MaterialTheme.typography.bodySmall)
                         Text(stringResource(R.string.settings_socket), style = MaterialTheme.typography.bodySmall)
                         Text(stringResource(R.string.settings_build, BuildConfig.BUILD_TYPE), style = MaterialTheme.typography.bodySmall)
@@ -300,7 +316,7 @@ fun SettingsScreen(
                     Icons.Filled.KeyboardArrowDown,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(28.dp).offset(y = offsetY.dp)
+                    modifier = Modifier.size(28.dp).graphicsLayer { translationY = offsetY * density }
                 )
             }
         }
