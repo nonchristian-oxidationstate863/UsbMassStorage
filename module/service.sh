@@ -1,6 +1,7 @@
 #!/system/bin/sh
 MODDIR="${0%/*}"
 TAG="usbmassstorage"
+DATA_DIR="/data/adb/Usbmanagement"
 LOCK_FILE="/dev/usbms_svc_lock"
 
 [ -f "$MODDIR/disable" ] && exit 0
@@ -32,32 +33,23 @@ if [ ! -f "$BIN" ]; then
     exit 1
 fi
 
-# Trigger app-side mount after boot via explicit broadcast.
-# App process has matching MCS categories to open its own files.
-# Explicit broadcast bypasses MIUI auto-start and stopped-app restrictions.
-(
-    while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done
-    sleep 3
-    am broadcast \
-        -a android.intent.action.BOOT_COMPLETED \
-        -n com.enginex0.usbmassstorage/.BootMountReceiver \
-        --include-stopped-packages --user 0 \
-        > /dev/null 2>&1
-    echo "${TAG}: sent boot mount broadcast to app" > /dev/kmsg
-) &
+# Ensure daemon (system user) can traverse /data/adb/ to reach our directory.
+# /data/adb/ is mode 700 root:root by default; o+x adds traverse without read/write.
+# Done here (not post-fs-data) because KSU may reset /data/adb perms between stages.
+chmod o+x /data/adb 2>/dev/null
 
 BACKOFF=1
 while true; do
     echo "${TAG}: launching daemon (ABI=$ABI)" > /dev/kmsg
     /system/bin/runcon u:r:msd_daemon:s0 "$BIN" daemon \
         --log-target logcat --log-level debug \
-        --automount-config /data/adb/usbmassstorage/automount.conf &
+        --automount-config "$DATA_DIR/automount.conf" &
     DAEMON_PID=$!
 
     # If daemon survives 5s, it bound the socket and is healthy
     sleep 5
     if kill -0 "$DAEMON_PID" 2>/dev/null; then
-        echo "COUNT=0" > /data/adb/usbmassstorage/count.sh 2>/dev/null
+        echo "COUNT=0" > "$DATA_DIR/count.sh" 2>/dev/null
         echo "${TAG}: daemon alive (pid=$DAEMON_PID), boot counter reset" > /dev/kmsg
         wait "$DAEMON_PID"
         rc=$?

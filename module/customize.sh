@@ -97,7 +97,7 @@ else
     msd_print "  ⚠️ ${LANG_SELINUX_WARN}"
 fi
 
-DATA_DIR="/data/adb/usbmassstorage"
+DATA_DIR="/data/adb/Usbmanagement"
 msd_print "📁 ${LANG_PREP_DATA}" 0.3 "h"
 
 mkdir -p "$DATA_DIR"
@@ -106,11 +106,15 @@ msd_print "  ✅ ${LANG_BOOT_RESET}"
 
 if [ -f "$MODPATH/app.apk" ]; then
     msd_print "📲 ${LANG_INSTALL_APP}" 0.3 "h"
-    pm install -r "$MODPATH/app.apk" >/dev/null 2>&1
-    if [ $? -eq 0 ]; then
+    if pm install -r -t -d "$MODPATH/app.apk" >/dev/null 2>&1; then
         msd_print "  ✅ ${LANG_APP_OK}"
     else
-        msd_print "  ⚠️ ${LANG_APP_FAIL}"
+        pm uninstall com.enginex0.usbmassstorage >/dev/null 2>&1
+        if pm install -t "$MODPATH/app.apk" >/dev/null 2>&1; then
+            msd_print "  ✅ ${LANG_APP_OK}"
+        else
+            msd_print "  ⚠️ ${LANG_APP_FAIL}"
+        fi
     fi
     rm -f "$MODPATH/app.apk"
 fi

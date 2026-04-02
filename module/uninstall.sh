@@ -1,7 +1,7 @@
 #!/system/bin/sh
 TAG="usbmassstorage"
 PKG="com.enginex0.usbmassstorage"
-DATA_DIR="/data/adb/usbmassstorage"
+DATA_DIR="/data/adb/Usbmanagement"
 LOCK_FILE="/dev/usbms_svc_lock"
 
 log() { echo "${TAG}: $1" > /dev/kmsg; }
@@ -21,7 +21,13 @@ if pm list packages 2>/dev/null | grep -q "$PKG"; then
     log "uninstalled $PKG"
 fi
 
+# Restore gadget state before cleanup
+MODDIR="${0%/*}"
+. "$MODDIR/common.sh" 2>/dev/null
+restore_gadget_state
+
 rm -rf "$DATA_DIR"
+rm -rf /data/misc/usbmassstorage /data/misc/gadget_backup /data/adb/usbmassstorage 2>/dev/null
 rm -f "$LOCK_FILE"
 
 log "uninstall complete"
