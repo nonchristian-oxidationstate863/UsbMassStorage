@@ -108,6 +108,24 @@ class DaemonClient : Closeable {
         Log.d(TAG, "SetMassStorageResponse received")
     }
 
+    fun setMassStoragePaths(devices: List<Triple<String, Boolean, Boolean>>) {
+        Log.d(TAG, "Sending SetMassStoragePathRequest with ${devices.size} devices")
+        output.writeU8(MsdProtocol.MSG_SET_MASS_STORAGE_PATH_REQUEST)
+        output.writeU8(devices.size)
+        for ((path, cdrom, ro) in devices) {
+            output.writeLengthPrefixedString(path)
+            output.writeU8(if (cdrom) 1 else 0)
+            output.writeU8(if (ro) 1 else 0)
+        }
+        output.flush()
+
+        val id = readResponseId()
+        if (id != MsdProtocol.MSG_SET_MASS_STORAGE_PATH_RESPONSE) {
+            throw IOException("Expected SetMassStoragePathResponse (${MsdProtocol.MSG_SET_MASS_STORAGE_PATH_RESPONSE}), got $id")
+        }
+        Log.d(TAG, "SetMassStoragePathResponse received")
+    }
+
     fun getMassStorage(): List<ActiveDevice> {
         Log.d(TAG, "Sending GetMassStorageRequest")
         output.writeU8(MsdProtocol.MSG_GET_MASS_STORAGE_REQUEST)

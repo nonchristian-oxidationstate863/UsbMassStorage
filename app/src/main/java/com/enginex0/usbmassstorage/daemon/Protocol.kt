@@ -19,6 +19,8 @@ object MsdProtocol {
     const val MSG_SET_MASS_STORAGE_RESPONSE: Int = 5
     const val MSG_GET_MASS_STORAGE_REQUEST: Int = 6
     const val MSG_GET_MASS_STORAGE_RESPONSE: Int = 7
+    const val MSG_SET_MASS_STORAGE_PATH_REQUEST: Int = 8
+    const val MSG_SET_MASS_STORAGE_PATH_RESPONSE: Int = 9
 }
 
 fun InputStream.readU8(): Int {

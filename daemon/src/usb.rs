@@ -193,6 +193,81 @@ impl UsbGadget {
         Ok(())
     }
 
+    /// Read a gadget-level attribute (e.g., "idVendor", "bDeviceClass").
+    pub fn read_attribute(&self, name: &str) -> Result<String> {
+        let path = Path::new(name);
+        let mut data = read_configfs_file(&self.root, &self.dir, path)?;
+        if data.last() == Some(&b'\n') {
+            data.pop();
+        }
+        String::from_utf8(data)
+            .with_context(|| format!("Non-UTF8 attribute value: {:?}", self.root.join(path)))
+    }
+
+    /// Write a gadget-level attribute.
+    pub fn write_attribute(&self, name: &str, value: &str) -> Result<()> {
+        write_configfs_file(
+            &self.root,
+            &self.dir,
+            Path::new(name),
+            &[IoSlice::new(value.as_bytes()), IoSlice::new(b"\n")],
+        )
+    }
+
+    /// Read a string descriptor (e.g., lang="0x0409", name="manufacturer").
+    pub fn read_string(&self, lang: &str, name: &str) -> Result<String> {
+        let path = PathBuf::from("strings").join(lang).join(name);
+        let mut data = read_configfs_file(&self.root, &self.dir, &path)?;
+        if data.last() == Some(&b'\n') {
+            data.pop();
+        }
+        String::from_utf8(data)
+            .with_context(|| format!("Non-UTF8 string value: {:?}", self.root.join(&path)))
+    }
+
+    /// Write a string descriptor.
+    pub fn write_string(&self, lang: &str, name: &str, value: &str) -> Result<()> {
+        let path = PathBuf::from("strings").join(lang).join(name);
+        write_configfs_file(
+            &self.root,
+            &self.dir,
+            &path,
+            &[IoSlice::new(value.as_bytes()), IoSlice::new(b"\n")],
+        )
+    }
+
+    /// Discover the actual strings language directory (e.g. "0x409").
+    ///
+    /// The kernel may format the USB language ID differently from the spec
+    /// (e.g. "0x409" vs "0x0409"), so we read the directory to find it.
+    pub fn strings_lang(&self) -> Result<String> {
+        let strings_path = self.root.join("strings");
+        let strings_dir = open_configfs_dir(&strings_path)?;
+        for entry in strings_dir
+            .entries()
+            .with_context(|| format!("Failed to read strings dir: {strings_path:?}"))?
+        {
+            let entry = entry
+                .with_context(|| format!("Failed to read strings entry: {strings_path:?}"))?;
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("0x") {
+                    return Ok(name.to_string());
+                }
+            }
+        }
+        bail!("No strings language directory found in {strings_path:?}")
+    }
+
+    /// Read the current UDC (USB Device Controller) value.
+    pub fn read_udc(&self) -> Result<String> {
+        let mut data = read_configfs_file(&self.root, &self.dir, Path::new("UDC"))?;
+        if data.last() == Some(&b'\n') {
+            data.pop();
+        }
+        String::from_utf8(data)
+            .with_context(|| format!("Non-UTF8 UDC value: {:?}", self.root.join("UDC")))
+    }
+
     /// Get the list of active gadget functions in the config.
     pub fn configs(&self) -> Result<BTreeMap<OsString, OsString>> {
         let (path, dir) = self.open_dir(&self.configs_rel_path())?;
@@ -266,6 +341,20 @@ impl UsbGadget {
                 Err(e).with_context(|| format!("Failed to delete config: {:?}", path.join(name)))
             }
         }
+    }
+
+    /// Remove all config entries (function symlinks). Returns the removed entries.
+    pub fn delete_all_configs(&self) -> Result<Vec<(OsString, OsString)>> {
+        let configs = self.configs()?;
+        let mut removed = Vec::new();
+
+        for (name, function) in &configs {
+            if self.delete_config(name)? {
+                removed.push((name.clone(), function.clone()));
+            }
+        }
+
+        Ok(removed)
     }
 
     /// List all gadget functions.
@@ -505,6 +594,46 @@ impl MassStorageFunction {
             &self.dir,
             &path.join("file"),
             &[IoSlice::new(b"\n")],
+        )
+    }
+
+    /// Replace the backing file for a LUN using a direct file path.
+    /// Only writes the file attribute (cdrom/ro must already be set).
+    pub fn set_lun_file(&self, lun: u8, file_path: &str) -> Result<()> {
+        let name = format!("lun.{lun}");
+        let path = Path::new(&name);
+
+        write_configfs_file(
+            &self.path,
+            &self.dir,
+            &path.join("file"),
+            &[IoSlice::new(format!("{file_path}\n").as_bytes())],
+        )
+    }
+
+    /// Set the removable flag for a LUN. Some kernels may lack this attribute.
+    pub fn set_lun_removable(&self, lun: u8, removable: bool) -> Result<()> {
+        let name = format!("lun.{lun}");
+        let path = Path::new(&name);
+
+        write_configfs_file(
+            &self.path,
+            &self.dir,
+            &path.join("removable"),
+            &[IoSlice::new(if removable { b"1\n" } else { b"0\n" })],
+        )
+    }
+
+    /// Set the nofua (no Force Unit Access) flag for a LUN.
+    pub fn set_lun_nofua(&self, lun: u8, nofua: bool) -> Result<()> {
+        let name = format!("lun.{lun}");
+        let path = Path::new(&name);
+
+        write_configfs_file(
+            &self.path,
+            &self.dir,
+            &path.join("nofua"),
+            &[IoSlice::new(if nofua { b"1\n" } else { b"0\n" })],
         )
     }
 }

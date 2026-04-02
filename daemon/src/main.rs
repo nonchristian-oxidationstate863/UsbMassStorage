@@ -5,6 +5,7 @@ mod client;
 mod daemon;
 mod message;
 mod sepatch;
+mod state;
 mod usb;
 mod util;
 

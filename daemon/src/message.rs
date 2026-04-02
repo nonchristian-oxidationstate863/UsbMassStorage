@@ -331,6 +331,82 @@ impl ToSocket for SetMassStorageResponse {
 }
 
 #[derive(Debug)]
+pub struct PathMassStorageDevice {
+    pub path: String,
+    pub cdrom: bool,
+    pub ro: bool,
+}
+
+impl FromSocket for PathMassStorageDevice {
+    fn from_socket(stream: &mut UnixStream) -> io::Result<Self> {
+        let data = read_data(stream)?;
+        let path = String::from_utf8(data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let cdrom = stream.read_u8()? != 0;
+        let ro = stream.read_u8()? != 0;
+        Ok(Self { path, cdrom, ro })
+    }
+}
+
+impl ToSocket for PathMassStorageDevice {
+    fn to_socket(&self, stream: &mut UnixStream) -> io::Result<()> {
+        write_data(stream, self.path.as_bytes())?;
+        stream.write_u8(self.cdrom.into())?;
+        stream.write_u8(self.ro.into())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct SetMassStoragePathRequest {
+    pub devices: Vec<PathMassStorageDevice>,
+}
+
+impl MessageId for SetMassStoragePathRequest {
+    const ID: u8 = 8;
+}
+
+impl FromSocket for SetMassStoragePathRequest {
+    fn from_socket(stream: &mut UnixStream) -> io::Result<Self> {
+        let n = stream.read_u8()?;
+        let mut devices = Vec::with_capacity(n.into());
+        for _ in 0..n {
+            devices.push(PathMassStorageDevice::from_socket(stream)?);
+        }
+        Ok(Self { devices })
+    }
+}
+
+impl ToSocket for SetMassStoragePathRequest {
+    fn to_socket(&self, stream: &mut UnixStream) -> io::Result<()> {
+        stream.write_u8(self.devices.len() as u8)?;
+        for d in &self.devices {
+            d.to_socket(stream)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SetMassStoragePathResponse;
+
+impl MessageId for SetMassStoragePathResponse {
+    const ID: u8 = 9;
+}
+
+impl FromSocket for SetMassStoragePathResponse {
+    fn from_socket(_stream: &mut UnixStream) -> io::Result<Self> {
+        Ok(Self)
+    }
+}
+
+impl ToSocket for SetMassStoragePathResponse {
+    fn to_socket(&self, _stream: &mut UnixStream) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct ActiveMassStorageDevice {
     pub file: PathBuf,
     pub cdrom: bool,
@@ -424,6 +500,7 @@ pub enum Request {
     GetFunctions(GetFunctionsRequest),
     SetMassStorage(SetMassStorageRequest),
     GetMassStorage(GetMassStorageRequest),
+    SetMassStoragePath(SetMassStoragePathRequest),
 }
 
 impl FromSocket for Request {
@@ -440,6 +517,9 @@ impl FromSocket for Request {
             GetMassStorageRequest::ID => {
                 GetMassStorageRequest::from_socket(stream).map(Self::GetMassStorage)
             }
+            SetMassStoragePathRequest::ID => {
+                SetMassStoragePathRequest::from_socket(stream).map(Self::SetMassStoragePath)
+            }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Invalid message ID: {id}"),
@@ -454,6 +534,7 @@ impl ToSocket for Request {
             Self::GetFunctions(m) => m.id(),
             Self::SetMassStorage(m) => m.id(),
             Self::GetMassStorage(m) => m.id(),
+            Self::SetMassStoragePath(m) => m.id(),
         };
 
         stream.write_u8(id)?;
@@ -462,6 +543,7 @@ impl ToSocket for Request {
             Self::GetFunctions(m) => m.to_socket(stream),
             Self::SetMassStorage(m) => m.to_socket(stream),
             Self::GetMassStorage(m) => m.to_socket(stream),
+            Self::SetMassStoragePath(m) => m.to_socket(stream),
         }
     }
 }
@@ -472,6 +554,7 @@ pub enum Response {
     GetFunctions(GetFunctionsResponse),
     SetMassStorage(SetMassStorageResponse),
     GetMassStorage(GetMassStorageResponse),
+    SetMassStoragePath(SetMassStoragePathResponse),
 }
 
 impl FromSocket for Response {
@@ -489,6 +572,9 @@ impl FromSocket for Response {
             GetMassStorageResponse::ID => {
                 GetMassStorageResponse::from_socket(stream).map(Self::GetMassStorage)
             }
+            SetMassStoragePathResponse::ID => {
+                SetMassStoragePathResponse::from_socket(stream).map(Self::SetMassStoragePath)
+            }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Invalid message ID: {id}"),
@@ -504,6 +590,7 @@ impl ToSocket for Response {
             Self::GetFunctions(m) => m.id(),
             Self::SetMassStorage(m) => m.id(),
             Self::GetMassStorage(m) => m.id(),
+            Self::SetMassStoragePath(m) => m.id(),
         };
 
         stream.write_u8(id)?;
@@ -513,6 +600,7 @@ impl ToSocket for Response {
             Self::GetFunctions(m) => m.to_socket(stream),
             Self::SetMassStorage(m) => m.to_socket(stream),
             Self::GetMassStorage(m) => m.to_socket(stream),
+            Self::SetMassStoragePath(m) => m.to_socket(stream),
         }
     }
 }

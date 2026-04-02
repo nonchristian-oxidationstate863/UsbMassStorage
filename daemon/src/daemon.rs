@@ -18,7 +18,7 @@ use std::{
     fs::{self, File},
     io,
     os::{
-        fd::{AsFd, AsRawFd},
+        fd::{AsFd, AsRawFd, OwnedFd},
         unix::net::{SocketAddr, UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
@@ -43,9 +43,10 @@ use tracing::{debug, error, info, info_span, warn};
 use crate::{
     message::{
         self, ActiveMassStorageDevice, ErrorResponse, FromSocket, GetFunctionsResponse,
-        GetMassStorageResponse, MassStorageDevice, Request, Response, SetMassStorageRequest,
-        SetMassStorageResponse, ToSocket,
+        GetMassStorageResponse, MassStorageDevice, Request, Response, SetMassStoragePathRequest,
+        SetMassStoragePathResponse, SetMassStorageRequest, SetMassStorageResponse, ToSocket,
     },
+    state,
     usb::UsbGadget,
     util::{self, ProcessIter, ProcessStopper},
 };
@@ -60,7 +61,7 @@ const FUNCTION_PREFIX: &str = "mass_storage.";
 const FUNCTION_NAME_DEFAULT: &str = "mass_storage.msd";
 const CONFIG_NAME: &str = "msd";
 
-const GADGET_HAL_PROCESS: &str = "android.hardware.usb.gadget-service";
+const GADGET_HAL_PROCESS: &str = "android.hardware.usb.gadget";
 
 pub fn socket_addr() -> SocketAddr {
     SocketAddr::from_abstract_name("msdd").expect("Invalid abstract socket name")
@@ -204,9 +205,17 @@ fn open_lower_fs(fd: &impl AsFd) -> Option<File> {
         .ok()
 }
 
+/// Serializes all gadget operations (mount, unmount, query).
+static GADGET_LOCK: Mutex<()> = Mutex::new(());
+
+/// Memfd file descriptors kept alive for configfs. Cleared on unmount.
+static ACTIVE_MEMFDS: Mutex<Vec<OwnedFd>> = Mutex::new(Vec::new());
+
+/// Original image paths indexed by LUN for display in getMassStorage responses.
+static ACTIVE_PATHS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 fn handle_set_mass_storage_request(request: &SetMassStorageRequest) -> Result<()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _lock = LOCK.lock().unwrap();
+    let _lock = GADGET_LOCK.lock().unwrap();
 
     for device in &request.devices {
         debug!("Checking device request: {device:?}");
@@ -281,6 +290,15 @@ fn handle_set_mass_storage_request(request: &SetMassStorageRequest) -> Result<()
         bail!("Cannot determine ID of USB controller");
     };
 
+    // Save gadget state before any changes (bootloop protection).
+    // Skip if already dirty — a previous backup exists from a crashed operation.
+    // Non-fatal: mount should work even if backup fails (e.g. SELinux blocks writes).
+    if !state::is_dirty() {
+        if let Err(e) = state::save_gadget_state(&gadget) {
+            warn!("Could not save gadget state (mount will proceed without bootloop protection): {e}");
+        }
+    }
+
     debug!("Disassociating gadget config from controller");
     gadget.set_controller(None)?;
 
@@ -330,30 +348,81 @@ fn handle_set_mass_storage_request(request: &SetMassStorageRequest) -> Result<()
         }
     }
 
-    debug!("Applying config to USB controller: {controller:?}");
-    gadget.set_controller(Some(&controller))?;
+    if request.devices.is_empty() {
+        ACTIVE_MEMFDS.lock().unwrap().clear();
+        ACTIVE_PATHS.lock().unwrap().clear();
+        state::restore_gadget_state(&gadget)?;
+    } else {
+        debug!("Applying config to USB controller: {controller:?}");
+        gadget.set_controller(Some(&controller))?;
+    }
 
     Ok(())
 }
 
 fn handle_get_mass_storage_request() -> Result<Vec<ActiveMassStorageDevice>> {
+    let _lock = GADGET_LOCK.lock().unwrap();
     let gadget = UsbGadget::new(GADGET_ROOT, CONFIGS_NAME)?;
     let function_name = detect_function_name(&gadget)?;
     let mut devices = vec![];
 
     if let Some(function) = gadget.open_mass_storage_function(&function_name)? {
-        for lun in function.luns()? {
-            let (file, cdrom, ro) = function.get_lun(lun)?;
-
-            // On Samsung devices, the mass storage gadget function cannot be
-            // recreated, so we leave it in an unconfigured state.
+        let paths = ACTIVE_PATHS.lock().unwrap();
+        let mut luns = function.luns()?;
+        luns.sort();
+        for lun in &luns {
+            let (file, cdrom, ro) = function.get_lun(*lun)?;
             if let Some(file) = file {
-                devices.push(ActiveMassStorageDevice { file, cdrom, ro });
+                let display_path = paths.get(*lun as usize)
+                    .map(PathBuf::from)
+                    .unwrap_or(file);
+                devices.push(ActiveMassStorageDevice { file: display_path, cdrom, ro });
             }
         }
     }
 
     Ok(devices)
+}
+
+fn handle_set_mass_storage_path_request(request: &SetMassStoragePathRequest) -> Result<()> {
+    // Open images directly — kernel reads from disk via /proc/pid/fd/N.
+    // No RAM copy needed; images of any size work without memory pressure.
+    let mut devices = Vec::with_capacity(request.devices.len());
+
+    for (lun, dev) in request.devices.iter().enumerate() {
+        info!("Mounting LUN #{lun}: {}", dev.path);
+
+        let src = File::open(&dev.path)
+            .with_context(|| format!("Failed to open image: {}", dev.path))?;
+
+        devices.push(MassStorageDevice {
+            fd: src.into(),
+            cdrom: dev.cdrom,
+            ro: dev.ro,
+        });
+    }
+
+    let mut paths = ACTIVE_PATHS.lock().unwrap();
+    paths.clear();
+    for dev in &request.devices {
+        paths.push(dev.path.clone());
+    }
+    drop(paths);
+
+    let fd_request = SetMassStorageRequest { devices };
+    if let Err(e) = handle_set_mass_storage_request(&fd_request) {
+        ACTIVE_PATHS.lock().unwrap().clear();
+        return Err(e);
+    }
+
+    // Keep file descriptors alive so kernel can read through /proc/pid/fd/N
+    let mut active = ACTIVE_MEMFDS.lock().unwrap();
+    active.clear();
+    for dev in fd_request.devices {
+        active.push(dev.fd);
+    }
+
+    Ok(())
 }
 
 fn handle_request(request: &Request) -> Response {
@@ -364,6 +433,8 @@ fn handle_request(request: &Request) -> Response {
             .map(|()| Response::SetMassStorage(SetMassStorageResponse)),
         Request::GetMassStorage(_) => handle_get_mass_storage_request()
             .map(|devices| Response::GetMassStorage(GetMassStorageResponse { devices })),
+        Request::SetMassStoragePath(r) => handle_set_mass_storage_path_request(r)
+            .map(|()| Response::SetMassStoragePath(SetMassStoragePathResponse)),
     };
 
     ret.unwrap_or_else(|e| {
@@ -541,27 +612,17 @@ fn perform_automount(entries: Vec<AutomountEntry>) -> Result<()> {
 
     let mut devices = vec![];
     for entry in &entries {
-        let file = if entry.ro {
-            File::open(&entry.path)
-        } else {
-            fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&entry.path)
-        };
-
-        match file {
-            Ok(f) => {
-                devices.push(MassStorageDevice {
-                    fd: f.into(),
-                    cdrom: entry.cdrom,
-                    ro: entry.ro,
-                });
-            }
-            Err(e) => {
-                warn!("Skipping automount file {:?}: {e}", entry.path);
-            }
+        let path_str = entry.path.to_string_lossy().into_owned();
+        // Verify the file exists and is accessible before adding it.
+        if !entry.path.exists() {
+            warn!("Skipping automount file {:?}: not found", entry.path);
+            continue;
         }
+        devices.push(message::PathMassStorageDevice {
+            path: path_str,
+            cdrom: entry.cdrom,
+            ro: entry.ro,
+        });
     }
 
     if devices.is_empty() {
@@ -569,9 +630,9 @@ fn perform_automount(entries: Vec<AutomountEntry>) -> Result<()> {
         return Ok(());
     }
 
-    info!("Auto-mounting {} devices", devices.len());
-    let request = SetMassStorageRequest { devices };
-    handle_set_mass_storage_request(&request)
+    info!("Auto-mounting {} devices via memfd path", devices.len());
+    let request = SetMassStoragePathRequest { devices };
+    handle_set_mass_storage_path_request(&request)
 }
 
 pub fn subcommand_daemon(cli: &DaemonCli) -> Result<()> {
@@ -588,6 +649,27 @@ pub fn subcommand_daemon(cli: &DaemonCli) -> Result<()> {
             }
         }
     });
+
+    // If a previous operation was interrupted, restore gadget state before
+    // doing anything else. This runs with root privileges (before drop).
+    if state::is_dirty() {
+        info!("Dirty flag detected — restoring gadget state from previous crash");
+        match UsbGadget::new(GADGET_ROOT, CONFIGS_NAME) {
+            Ok(gadget) => {
+                if let Err(e) = state::restore_gadget_state(&gadget) {
+                    warn!("Startup gadget restore failed: {e:?}");
+                }
+            }
+            Err(e) => warn!("Could not open gadget for restore: {e:?}"),
+        }
+    }
+
+    // Ensure backup directory exists and is writable after privilege drop.
+    // Non-fatal — if SELinux or permissions block this, mount will still work
+    // but without bootloop protection until post-fs-data creates the dir.
+    if let Err(e) = state::ensure_backup_dir() {
+        warn!("Could not prepare backup dir (will retry on mount): {e}");
+    }
 
     drop_privileges()?;
 
@@ -611,11 +693,22 @@ pub fn subcommand_daemon(cli: &DaemonCli) -> Result<()> {
                 .context("Failed to get socket peer credentials")?;
 
             scope.spawn(move || {
+                // Read peer SELinux context for diagnostics.
+                let peer_context = fs::read_to_string(format!(
+                    "/proc/{}/attr/current",
+                    ucred.pid.as_raw_nonzero()
+                ))
+                .unwrap_or_default()
+                .trim_matches('\0')
+                .trim()
+                .to_string();
+
                 let _span = info_span!(
                     "peer",
                     pid = ucred.pid.as_raw_nonzero(),
                     uid = ucred.uid.as_raw(),
                     gid = ucred.gid.as_raw(),
+                    context = %peer_context,
                 )
                 .entered();
 

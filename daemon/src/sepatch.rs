@@ -132,6 +132,8 @@ pub fn subcommand_sepatch(cli: &SepatchCli) -> Result<()> {
     let t_platform_app = t!("platform_app")?;
     let t_selinuxfs = t!("selinuxfs")?;
     let t_shell = t!("shell")?;
+    let t_priv_app = t!("priv_app")?;
+    let t_system_app = t!("system_app")?;
     // https://android.googlesource.com/platform/system/sepolicy/+/afede84ad598ee860fdba1f5002ca7b0609235aa
     let t_storage_config_prop = t!("storage_config_prop").or_else(|e| {
         eprintln!("{e}; assuming old version of Android");
@@ -152,6 +154,7 @@ pub fn subcommand_sepatch(cli: &SepatchCli) -> Result<()> {
     let c_dir = c!("dir")?;
     let p_dir_add_name = p!(c_dir, "add_name")?;
     let p_dir_create = p!(c_dir, "create")?;
+    let p_dir_getattr = p!(c_dir, "getattr")?;
     let p_dir_open = p!(c_dir, "open")?;
     let p_dir_read = p!(c_dir, "read")?;
     let p_dir_remove_name = p!(c_dir, "remove_name")?;
@@ -164,6 +167,7 @@ pub fn subcommand_sepatch(cli: &SepatchCli) -> Result<()> {
     let p_fd_use = p!(c_fd, "use")?;
 
     let c_file = c!("file")?;
+    let p_file_append = p!(c_file, "append")?;
     let p_file_create = p!(c_file, "create")?;
     let p_file_entrypoint = p!(c_file, "entrypoint")?;
     let p_file_execute = p!(c_file, "execute")?;
@@ -171,7 +175,9 @@ pub fn subcommand_sepatch(cli: &SepatchCli) -> Result<()> {
     let p_file_map = p!(c_file, "map")?;
     let p_file_open = p!(c_file, "open")?;
     let p_file_read = p!(c_file, "read")?;
+    let p_file_rename = p!(c_file, "rename")?;
     let p_file_setattr = p!(c_file, "setattr")?;
+    let p_file_unlink = p!(c_file, "unlink")?;
     let p_file_write = p!(c_file, "write")?;
 
     let c_lnk_file = c!("lnk_file")?;
@@ -397,9 +403,24 @@ pub fn subcommand_sepatch(cli: &SepatchCli) -> Result<()> {
         }
     }
 
-    // Allow the daemon to read the external_storage.sdcardfs.enabled and
-    // sys.usb.controller properties.
-    for target in [t_storage_config_prop, t_usb_control_prop] {
+    // Allow the daemon to read sys.boot_completed for automount timing.
+    let t_boot_status_prop = t!("boot_status_prop").or_else(|e| {
+        eprintln!("{e}; assuming old version of Android");
+        t!("default_prop")
+    })?;
+
+    // Allow the daemon to read /proc/meminfo for RAM availability checks.
+    let t_proc_meminfo = t!("proc_meminfo").or_else(|e| {
+        eprintln!("{e}; assuming old version of Android");
+        t!("proc")
+    })?;
+    for perm in [p_file_getattr, p_file_open, p_file_read] {
+        pdb.set_rule(t_daemon, t_proc_meminfo, c_file, perm, RuleAction::Allow);
+    }
+
+    // Allow the daemon to read the external_storage.sdcardfs.enabled,
+    // sys.usb.controller, and sys.boot_completed properties.
+    for target in [t_storage_config_prop, t_usb_control_prop, t_boot_status_prop] {
         for perm in [p_file_getattr, p_file_map, p_file_open, p_file_read] {
             pdb.set_rule(t_daemon, target, c_file, perm, RuleAction::Allow);
         }
@@ -457,6 +478,62 @@ pub fn subcommand_sepatch(cli: &SepatchCli) -> Result<()> {
     // Allow the kernel to use the daemon's FD.
     pdb.set_rule(t_kernel, t_daemon, c_fd, p_fd_use, RuleAction::Allow);
 
+    // Allow kernel and daemon to use memfds (SELinux labels them tmpfs:file).
+    // Kernel's f_mass_storage workqueue reads/writes memfd data as u:r:kernel:s0.
+    // Daemon creates memfds via memfd_create() to hold images in unencrypted RAM.
+    if let Some(t_tmpfs) = pdb.get_type_id("tmpfs") {
+        for perm in [p_file_read, p_file_write, p_file_open, p_file_getattr] {
+            pdb.set_rule(t_kernel, t_tmpfs, c_file, perm, RuleAction::Allow);
+        }
+        for perm in [p_file_create, p_file_read, p_file_write, p_file_getattr, p_file_open] {
+            pdb.set_rule(t_daemon, t_tmpfs, c_file, perm, RuleAction::Allow);
+        }
+    }
+
+    // Allow daemon to access storage at /data/adb/Usbmanagement/.
+    if let Some(t_adb_data_file) = pdb.get_type_id("adb_data_file") {
+        for perm in [
+            p_dir_add_name, p_dir_create, p_dir_getattr, p_dir_open, p_dir_read,
+            p_dir_remove_name, p_dir_search, p_dir_setattr, p_dir_write,
+        ] {
+            pdb.set_rule(t_daemon, t_adb_data_file, c_dir, perm, RuleAction::Allow);
+        }
+        for perm in [
+            p_file_create, p_file_getattr, p_file_open, p_file_read,
+            p_file_rename, p_file_setattr, p_file_unlink, p_file_write,
+        ] {
+            pdb.set_rule(t_daemon, t_adb_data_file, c_file, perm, RuleAction::Allow);
+        }
+        for perm in [p_file_read, p_file_open, p_file_getattr] {
+            pdb.set_rule(t_kernel, t_adb_data_file, c_file, perm, RuleAction::Allow);
+        }
+    }
+
+    // Allow directory traversal through /data/ to reach /data/adb/.
+    if let Some(t_system_data_file) = pdb.get_type_id("system_data_file") {
+        for perm in [p_dir_search, p_dir_getattr] {
+            pdb.set_rule(t_daemon, t_system_data_file, c_dir, perm, RuleAction::Allow);
+        }
+    }
+    if let Some(t_sdr) = pdb.get_type_id("system_data_root_file") {
+        for perm in [p_dir_search, p_dir_getattr] {
+            pdb.set_rule(t_daemon, t_sdr, c_dir, perm, RuleAction::Allow);
+        }
+    }
+
+    // Allow daemon to write to shell_data_file (logging).
+    if let Some(t_shell_data_file) = pdb.get_type_id("shell_data_file") {
+        for perm in [p_file_read, p_file_write, p_file_append, p_file_getattr, p_file_open] {
+            pdb.set_rule(t_daemon, t_shell_data_file, c_file, perm, RuleAction::Allow);
+        }
+        for perm in [p_dir_search, p_dir_write, p_dir_add_name] {
+            pdb.set_rule(t_daemon, t_shell_data_file, c_dir, perm, RuleAction::Allow);
+        }
+    }
+
+    // Allow daemon to receive FDs from untrusted_app (user-installed apps).
+    pdb.set_rule(t_daemon, t_source, c_fd, p_fd_use, RuleAction::Allow);
+
     // Block the daemon from connecting to itself. The daemon uses this to test
     // that the policy is loaded.
     pdb.set_rule(
@@ -467,29 +544,21 @@ pub fn subcommand_sepatch(cli: &SepatchCli) -> Result<()> {
         RuleAction::Deny,
     );
 
-    // Allow the client to connect to daemon.
-    pdb.set_rule(
-        t_target,
-        t_daemon,
-        c_unix_stream_socket,
-        p_unix_stream_socket_connectto,
-        RuleAction::Allow,
-    );
-
-    // Unprivileged execution of `msd-tool client` is denied by default to
-    // reduce the attack surface.
-    if cli.allow_adb {
-        // Allow the client to connect to the daemon.
+    // Allow clients to connect to daemon (msd_app + all standard app types + shell).
+    for app_type in [t_target, t_platform_app, t_priv_app, t_system_app, t_shell] {
         pdb.set_rule(
-            t_shell,
+            app_type,
             t_daemon,
             c_unix_stream_socket,
             p_unix_stream_socket_connectto,
             RuleAction::Allow,
         );
+    }
 
-        // Allow the daemon to receive fds from the client.
-        pdb.set_rule(t_daemon, t_shell, c_fd, p_fd_use, RuleAction::Allow);
+    // Allow the daemon to receive fds from additional app types.
+    // (untrusted_app and platform_app fd use are already covered above.)
+    for app_type in [t_priv_app, t_system_app, t_shell] {
+        pdb.set_rule(t_daemon, app_type, c_fd, p_fd_use, RuleAction::Allow);
     }
 
     if cli.strip_no_audit {
@@ -561,8 +630,4 @@ pub struct SepatchCli {
     /// Remove dontaudit/dontauditxperm rules.
     #[arg(short = 'd', long)]
     strip_no_audit: bool,
-
-    /// Allow connections from adb shell session.
-    #[arg(long)]
-    allow_adb: bool,
 }
